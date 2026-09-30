@@ -32,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }            # SonarCloud : analyse du code nouveau
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with: { distribution: temurin, java-version: "21", cache: maven }
       # Compilation -Xlint:all -Werror, unitaires, ArchUnit, contrats d'événements, intégration Testcontainers
       # (Docker est disponible sur le runner : les *IT tournent ici), JaCoCo (branches ≥ 70 %), SBOM CycloneDX.
@@ -186,7 +186,7 @@ jobs:
           echo "::add-mask::$pass"
           echo "RABBITMQ_USER=$user" >> "$GITHUB_ENV"
           echo "RABBITMQ_PASSWORD=$pass" >> "$GITHUB_ENV"
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with: { distribution: temurin, java-version: "21", cache: maven }
       - name: Scénarios Gherkin (hors @wip) contre la recette
         run: |
