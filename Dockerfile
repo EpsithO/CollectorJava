@@ -2,7 +2,7 @@
 # --platform=$BUILDPLATFORM : l'étape Maven tourne UNE fois, en natif sur la machine de build.
 # Un JAR ne dépend pas de l'architecture ; sans cette option, le build arm64 exécuterait Maven
 # sous émulation QEMU (plus de 10 min par service).
-FROM --platform=$BUILDPLATFORM eclipse-temurin:21-jdk AS build
+FROM --platform=$BUILDPLATFORM eclipse-temurin:25-jdk AS build
 WORKDIR /src
 COPY .mvn/ .mvn/
 COPY --chmod=755 mvnw ./
