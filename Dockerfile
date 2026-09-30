@@ -5,7 +5,8 @@
 FROM --platform=$BUILDPLATFORM eclipse-temurin:21-jdk AS build
 WORKDIR /src
 COPY .mvn/ .mvn/
-COPY mvnw pom.xml ./
+COPY --chmod=755 mvnw ./
+COPY pom.xml ./
 COPY libs/ libs/
 COPY services/ services/
 ARG SERVICE=catalogue-service
