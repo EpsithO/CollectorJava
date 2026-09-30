@@ -106,7 +106,7 @@ jobs:
       # vérifient la signature). On ne signe qu'après avoir scanné les DEUX variantes réellement publiées.
       - name: Construction et publication multi-architecture (amd64 + arm64)
         id: push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           build-args: SERVICE=${{ matrix.service }}
