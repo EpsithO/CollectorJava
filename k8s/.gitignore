@@ -1,0 +1,3 @@
+# Produits par scripts/deploy.sh : jamais versionnés (contiennent des secrets générés en CI).
+.generated-*/
+.generated-secrets.env

@@ -1,0 +1,42 @@
+# TLS par cert-manager avec une autorité LOCALE (démo et recette, hôtes en .local) :
+#   auto-signé  ->  certificat de l'autorité (Secret collector-ca)  ->  Issuer collector-ca-issuer
+#   ->  certificat des trois hôtes, demandé par l'annotation de l'Ingress (Secret collector-tls).
+# Les tests d'acceptation exportent ca.crt du Secret collector-ca et l'ajoutent à leur magasin de confiance.
+# Production : remplacer par un Issuer ACME (Let's Encrypt) sur de vrais noms de domaine.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: collector-selfsigned
+  labels:
+    app.kubernetes.io/part-of: collector
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: collector-ca
+  labels:
+    app.kubernetes.io/part-of: collector
+spec:
+  isCA: true
+  commonName: collector-ca
+  secretName: collector-ca
+  duration: 8760h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: collector-selfsigned
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: collector-ca-issuer
+  labels:
+    app.kubernetes.io/part-of: collector
+spec:
+  ca:
+    secretName: collector-ca

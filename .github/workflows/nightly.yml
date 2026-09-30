@@ -1,0 +1,131 @@
+name: Nocturne
+
+# Tout ce qui est trop long ou trop bruyant pour chaque commit : charge (métrique 3 : p95 et taux d'erreur),
+# ZAP complet, tests de mutation PIT. Les images sont construites localement (docker build + kind load) :
+# la chaîne signée est exercée par ci.yml, ici on mesure l'application.
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions: { contents: read }
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  charge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21", cache: maven }
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: collector
+          config: k8s/kind/cluster.yaml
+      - name: Plateforme
+        run: ./k8s/scripts/install-platform.sh kind
+      - name: Déploiement complet (images construites localement)
+        run: |
+          ./k8s/scripts/deploy.sh ci
+          echo "127.0.0.1 api.collector.local auth.collector.local s3.collector.local" | sudo tee -a /etc/hosts
+          set -a; . k8s/.generated-secrets.env; set +a
+          echo "::add-mask::$KC_TEST_USER_PASSWORD"
+          echo "KC_TEST_USER_PASSWORD=$KC_TEST_USER_PASSWORD" >> "$GITHUB_ENV"
+          kubectl -n collector get secret collector-ca -o jsonpath='{.data.ca\.crt}' | base64 -d > "$RUNNER_TEMP/collector-ca.crt"
+
+      - name: Installation de JMeter et confiance dans l'autorité locale
+        run: |
+          curl -fsSL https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-5.6.3.tgz | tar xz -C "$RUNNER_TEMP"
+          echo "JMETER_HOME=$RUNNER_TEMP/apache-jmeter-5.6.3" >> "$GITHUB_ENV"
+          keytool -importcert -noprompt -alias collector-ca -file "$RUNNER_TEMP/collector-ca.crt" \
+            -keystore "$RUNNER_TEMP/truststore.jks" -storepass changeit
+          echo "JVM_ARGS=-Djavax.net.ssl.trustStore=$RUNNER_TEMP/truststore.jks -Djavax.net.ssl.trustStorePassword=changeit" >> "$GITHUB_ENV"
+
+      # Deux mesures (docs/tests.md, E2) : la CAPACITÉ de l'application (limite de débit de Traefik relevée), puis la
+      # PROTECTION (limite normale : les réponses 429 montrent que le rate limiting absorbe l'excès).
+      - name: Mesure 1 — capacité (limite de débit relevée)
+        run: |
+          kubectl -n collector patch middleware rate-limit --type merge \
+            -p '{"spec":{"rateLimit":{"average":100000,"burst":100000}}}'
+          "$JMETER_HOME/bin/jmeter" -n -t tests/load/collector.jmx \
+            -Jhost=api.collector.local -Jauth_host=auth.collector.local -Jkc_password="$KC_TEST_USER_PASSWORD" \
+            -l "$RUNNER_TEMP/capacite.jtl" -e -o "$RUNNER_TEMP/rapport-capacite"
+          kubectl -n collector get hpa
+      - name: Mesure 2 — protection (limite de débit normale)
+        run: |
+          kubectl -n collector patch middleware rate-limit --type merge \
+            -p '{"spec":{"rateLimit":{"average":50,"burst":100}}}'
+          "$JMETER_HOME/bin/jmeter" -n -t tests/load/collector.jmx \
+            -Jhost=api.collector.local -Jauth_host=auth.collector.local -Jkc_password="$KC_TEST_USER_PASSWORD" \
+            -l "$RUNNER_TEMP/protection.jtl" -e -o "$RUNNER_TEMP/rapport-protection"
+
+      - name: Résumé p95 et taux d'erreur
+        if: always()
+        run: |
+          python3 - "$RUNNER_TEMP/capacite.jtl" "$RUNNER_TEMP/protection.jtl" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import csv, sys, os
+          print("## Charge nocturne (métrique 3 : p95 < 300 ms, erreurs < 1 %)")
+          print()
+          print("| Mesure | Requêtes | p95 (ms) | Erreurs | 429 | Verdict |")
+          print("|---|---|---|---|---|---|")
+          for path, label in zip(sys.argv[1:], ["capacité", "protection"]):
+              if not os.path.exists(path):
+                  print(f"| {label} | absent | | | | |")
+                  continue
+              rows = list(csv.DictReader(open(path, encoding="utf-8")))
+              elapsed = sorted(int(r["elapsed"]) for r in rows)
+              p95 = elapsed[int(len(elapsed) * 0.95) - 1] if elapsed else 0
+              errors = sum(1 for r in rows if r["success"] != "true" and r["responseCode"] != "429")
+              throttled = sum(1 for r in rows if r["responseCode"] == "429")
+              rate = errors / len(rows) if rows else 1
+              ok = "OK" if (p95 < 300 and rate < 0.01) else "à analyser"
+              print(f"| {label} | {len(rows)} | {p95} | {rate:.2%} | {throttled} | {ok} |")
+          PY
+      - name: Diagnostic (HPA, pods)
+        if: always()
+        run: |
+          kubectl -n collector get pods,hpa
+          kubectl -n collector top pods || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rapports-charge
+          path: |
+            ${{ runner.temp }}/*.jtl
+            ${{ runner.temp }}/rapport-capacite
+            ${{ runner.temp }}/rapport-protection
+
+      - name: ZAP complet (API)
+        if: always()
+        continue-on-error: true
+        run: |
+          mkdir -p zap && chmod 777 zap
+          docker run --rm --network host --add-host api.collector.local:127.0.0.1 -v "$PWD/zap:/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable zap-api-scan.py \
+            -t https://api.collector.local/v3/api-docs -f openapi -r zap-complet.html
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rapport-zap-complet
+          path: zap/*.html
+
+  mutation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21", cache: maven }
+      # PIT mesure la qualité des assertions (limite « tests sans assertion », slide 7). Rapport non bloquant.
+      - name: Tests de mutation PIT
+        continue-on-error: true
+        run: ./mvnw -B -Pmutation test-compile org.pitest:pitest-maven:mutationCoverage
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rapports-pit
+          path: "**/target/pit-reports/**"

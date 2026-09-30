@@ -1,0 +1,8 @@
+.env
+target/
+.idea/
+*.iml
+doc/
+node_modules/
+.vscode/
+dist/

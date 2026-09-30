@@ -1,0 +1,57 @@
+# RabbitMQ PerfTest : référence de débit et de latence sur files quorum avec confirms de l'éditeur.
+# Mesure de référence :   kubectl -n collector apply -f (ce fichier, déjà dans l'overlay) puis kubectl logs job/perftest
+# Mesure avec perte d'un nœud : pendant les 120 s, kubectl -n collector delete pod rabbitmq-server-1
+# Les identifiants viennent du Secret rabbitmq-default-user créé par l'opérateur (rien en clair ici).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: perftest
+  labels:
+    app.kubernetes.io/name: perftest
+    app.kubernetes.io/part-of: collector
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: perftest
+        app.kubernetes.io/part-of: collector
+        collector.shop/perf-test: "true"
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: perftest
+          # Épingler la version utilisée dans le protocole d'expérimentation (docs) : « latest » est toléré
+          # ici seulement, le bac à sable ne tourne jamais en production.
+          image: pivotalrabbitmq/perf-test:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: RABBITMQ_USER
+              valueFrom: { secretKeyRef: { name: rabbitmq-default-user, key: username } }
+            - name: RABBITMQ_PASSWORD
+              valueFrom: { secretKeyRef: { name: rabbitmq-default-user, key: password } }
+          args:
+            - --uri
+            - amqp://$(RABBITMQ_USER):$(RABBITMQ_PASSWORD)@rabbitmq:5672
+            - --quorum-queue
+            - --queue
+            - perftest
+            - --confirm
+            - "100"
+            - --rate
+            - "500"
+            - --time
+            - "120"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 200m, memory: 256Mi }
+            limits: { cpu: "1", memory: 512Mi }

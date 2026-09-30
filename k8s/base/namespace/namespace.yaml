@@ -1,0 +1,11 @@
+# Pod Security Admission : on REFUSE ce qui viole le niveau « baseline » et on AVERTIT (warn, audit)
+# sur le niveau « restricted » visé par les charges applicatives (non-root, capacités retirées, seccomp).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: collector
+  labels:
+    app.kubernetes.io/part-of: collector
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

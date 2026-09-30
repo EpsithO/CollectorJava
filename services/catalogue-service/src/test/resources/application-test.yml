@@ -1,0 +1,23 @@
+# Profil de test : valeurs factices pour tous les placeholders sans défaut de application.yml
+# (aucun secret réel) ; Flyway tourne dans l'application, contre la base Testcontainers.
+spring:
+  datasource:
+    password: test
+  flyway:
+    enabled: true
+    locations: classpath:db/migration,classpath:db/seed
+  rabbitmq:
+    username: guest
+    password: guest
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://issuer.test/realms/collector
+          jwk-set-uri: http://issuer.test/realms/collector/certs
+collector:
+  storage:
+    endpoint: http://localhost:3900
+    public-endpoint: http://localhost:3900
+    access-key: GKtest
+    secret-key: test

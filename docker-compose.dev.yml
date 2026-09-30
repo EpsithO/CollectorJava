@@ -1,0 +1,7 @@
+# Développement local seulement, jamais en recette : publie PostgreSQL et AMQP
+# sur 127.0.0.1 pour lancer un service depuis l'IDE.
+services:
+  postgres:
+    ports: ["127.0.0.1:5432:5432"]
+  rabbitmq:
+    ports: ["127.0.0.1:5672:5672"]

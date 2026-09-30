@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://collector.shop/schemas/interests.updated.v1.json",
+  "title": "interests.updated",
+  "type": "object",
+  "required": [
+    "event_id",
+    "type",
+    "version",
+    "occurred_at",
+    "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "type": {
+      "const": "interests.updated"
+    },
+    "version": {
+      "const": 1
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "data": {
+      "type": "object",
+      "required": [
+        "member_id",
+        "category_ids"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "member_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "category_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "maxItems": 10,
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}

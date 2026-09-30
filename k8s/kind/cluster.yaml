@@ -1,0 +1,10 @@
+# Cluster kind de la recette (CI) : un nœud, ports 80 et 443 de la machine redirigés vers les NodePorts de
+# Traefik (30080 et 30443, voir platform/traefik-values-kind.yaml). Les hôtes *.collector.local pointent
+# sur 127.0.0.1 (/etc/hosts), donc https://api.collector.local atteint Traefik sans tunnel.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - { containerPort: 30080, hostPort: 80, protocol: TCP }
+      - { containerPort: 30443, hostPort: 443, protocol: TCP }

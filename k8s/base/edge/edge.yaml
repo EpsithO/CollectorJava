@@ -1,0 +1,67 @@
+# Point d'entrée : Traefik (Ingress standard + Middlewares ; ingress-nginx n'est plus maintenu, ADR 0012).
+# Seuls api / auth / s3 sont routés. Le management (8081), l'API d'administration de Garage (3903), RabbitMQ
+# et le service de contrôle ne sont JAMAIS exposés.
+# Middlewares : limite de débit par IP (protection) et en-têtes de sécurité (HSTS, nosniff, frame deny).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rate-limit
+  labels:
+    app.kubernetes.io/part-of: collector
+spec:
+  rateLimit:
+    average: 50
+    burst: 100
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: security-headers
+  labels:
+    app.kubernetes.io/part-of: collector
+spec:
+  headers:
+    stsSeconds: 31536000
+    stsIncludeSubdomains: true
+    contentTypeNosniff: true
+    frameDeny: true
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: collector
+  labels:
+    app.kubernetes.io/part-of: collector
+  annotations:
+    cert-manager.io/issuer: collector-ca-issuer
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: collector-rate-limit@kubernetescrd,collector-security-headers@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [api.collector.local, auth.collector.local, s3.collector.local]
+      secretName: collector-tls
+  rules:
+    - host: api.collector.local
+      http:
+        paths:
+          # Plus spécifique d'abord : les notifications sont servies par notification-service.
+          - path: /api/v1/me/notifications
+            pathType: Prefix
+            backend: { service: { name: notification, port: { name: http } } }
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: catalogue, port: { name: http } } }
+    - host: auth.collector.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: keycloak, port: { name: http } } }
+    - host: s3.collector.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: storage, port: { name: api } } }

@@ -1,0 +1,11 @@
+# Bac à sable de l'expérimentation RabbitMQ (docs/experimentation/rabbitmq-kubernetes.md) :
+# l'opérateur (installé par install-platform.sh), un cluster de 3 nœuds et RabbitMQ PerfTest. Rien d'autre.
+#   minikube start -p sandbox --memory=5g --cpus=4
+#   ./k8s/scripts/install-platform.sh minikube ; ./k8s/scripts/deploy.sh sandbox
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: collector
+resources:
+  - ../../base/namespace
+  - ../../base/rabbitmq
+  - perf-test.yaml

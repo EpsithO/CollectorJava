@@ -1,0 +1,9 @@
+.git
+.idea
+**/target
+.env
+.env.*
+doc/
+docs/
+k8s/
+frontend/

@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://collector.shop/schemas/article.checked.v1.json",
+  "title": "article.checked",
+  "type": "object",
+  "required": [
+    "event_id",
+    "type",
+    "version",
+    "occurred_at",
+    "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "type": {
+      "const": "article.checked"
+    },
+    "version": {
+      "const": 1
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "data": {
+      "type": "object",
+      "required": [
+        "article_id",
+        "verdict",
+        "anomaly_score",
+        "reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "article_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "verdict": {
+          "enum": [
+            "PUBLIE",
+            "EN_REVUE"
+          ]
+        },
+        "anomaly_score": {
+          "type": "number"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

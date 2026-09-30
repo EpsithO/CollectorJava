@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://collector.shop/schemas/fraud.alert.v1.json",
+  "title": "fraud.alert",
+  "type": "object",
+  "required": [
+    "event_id",
+    "type",
+    "version",
+    "occurred_at",
+    "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "type": {
+      "const": "fraud.alert"
+    },
+    "version": {
+      "const": 1
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "data": {
+      "type": "object",
+      "required": [
+        "article_id",
+        "seller_id",
+        "kind",
+        "score",
+        "details"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "article_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "seller_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "const": "PRIX_ANORMAL"
+        },
+        "score": {
+          "type": "number"
+        },
+        "details": {
+          "type": "object",
+          "required": [
+            "price_cents",
+            "median_cents",
+            "stddev_cents"
+          ],
+          "properties": {
+            "price_cents": {
+              "type": "integer"
+            },
+            "median_cents": {
+              "type": "number"
+            },
+            "stddev_cents": {
+              "type": "number"
+            }
+          }
+        }
+      }
+    }
+  }
+}

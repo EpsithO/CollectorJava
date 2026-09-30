@@ -1,0 +1,86 @@
+# Keycloak (OIDC). Mode « start-dev » + import du realm : suffisant pour la démo et la recette (base H2 de
+# développement, donc NON persistante : le realm est réimporté à chaque démarrage). Un mode production
+# (base PostgreSQL dédiée, TLS) est une action de remédiation court terme (docs/remediation.md).
+# Le système de fichiers n'est pas en lecture seule : start-dev compile (augmentation Quarkus) au démarrage.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/part-of: collector
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate            # base H2 locale : jamais deux instances en parallèle
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keycloak
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keycloak
+        app.kubernetes.io/part-of: collector
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 0
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.4
+          imagePullPolicy: IfNotPresent
+          args: ["start-dev", "--import-realm"]
+          ports:
+            - { name: http, containerPort: 8080 }
+            - { name: management, containerPort: 9000 }
+          env:
+            - { name: KC_BOOTSTRAP_ADMIN_USERNAME, value: admin }
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: collector-secrets, key: KEYCLOAK_ADMIN_PASSWORD } }
+            # Émetteur fixe et public : le « iss » des jetons ne dépend pas de l'adresse d'appel.
+            - { name: KC_HOSTNAME, value: "https://auth.collector.local" }
+            - { name: KC_HOSTNAME_BACKCHANNEL_DYNAMIC, value: "true" }   # les services appellent http://keycloak:8080
+            - { name: KC_PROXY_HEADERS, value: xforwarded }              # derrière Traefik
+            - { name: KC_HTTP_ENABLED, value: "true" }                   # TLS terminé par Traefik
+            - { name: KC_HEALTH_ENABLED, value: "true" }
+            - { name: JAVA_OPTS_KC_HEAP, value: "-Xms256m -Xmx512m" }
+            - name: KC_TEST_USER_PASSWORD                                 # substitué dans le realm importé
+              valueFrom: { secretKeyRef: { name: collector-secrets, key: KC_TEST_USER_PASSWORD } }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 250m, memory: 768Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          startupProbe:
+            httpGet: { path: /health/ready, port: management }
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /health/ready, port: management }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health/live, port: management }
+            periodSeconds: 20
+          volumeMounts:
+            - { name: realm, mountPath: /opt/keycloak/data/import, readOnly: true }
+      volumes:
+        - name: realm
+          configMap:
+            name: keycloak-realm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/part-of: collector
+spec:
+  selector:
+    app.kubernetes.io/name: keycloak
+  ports:
+    - { name: http, port: 8080, targetPort: http }

@@ -1,0 +1,25 @@
+# RabbitMQ par l'opérateur officiel (RabbitMQ Cluster Operator, installé par install-platform.sh).
+# Configuration COMPLÈTE : 3 nœuds, files quorum répliquées. L'overlay minikube la ramène à 1 nœud.
+# L'opérateur crée lui-même : le Service « rabbitmq » (5672, 15672, 15692), le Service headless
+# « rabbitmq-nodes » et le Secret « rabbitmq-default-user » lu par les services.
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  name: rabbitmq
+  labels:
+    app.kubernetes.io/part-of: collector
+spec:
+  replicas: 3
+  image: rabbitmq:4.1-management
+  persistence:
+    storage: 2Gi
+    # storageClassName : celle par défaut du cluster ; à fixer dans l'overlay cloud
+  resources:
+    requests: { cpu: 200m, memory: 512Mi }
+    limits: { cpu: "1", memory: 1Gi }
+  rabbitmq:
+    additionalConfig: |
+      # Partition réseau : le côté minoritaire se met en pause plutôt que de diverger (pas de perte silencieuse).
+      cluster_partition_handling = pause_minority
+      # Métriques par file (profondeur de collector.dead-letter, alerte « lettres mortes non vide »).
+      prometheus.return_per_object_metrics = true

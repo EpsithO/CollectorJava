@@ -1,0 +1,131 @@
+# Deux tâches planifiées, toutes deux avec le rôle propriétaire (seul habilité à rafraîchir la vue et à tout sauvegarder).
+#
+# 1. stats-refresher : REFRESH MATERIALIZED VIEW CONCURRENTLY category_price_stats toutes les 5 minutes.
+#    La règle des 3 écarts-types du controle-service lit cette vue : sans rafraîchissement, elle serait périmée.
+# 2. pg-backup : pg_dump -Fc quotidien vers un volume dédié, rétention 7 jours (RPO 24 h, RTO 1 h).
+#    Le test de restauration est documenté dans docs/exploitation.md. En cloud, viser le stockage objet.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: stats-refresher
+  labels:
+    app.kubernetes.io/name: stats-refresher
+    app.kubernetes.io/part-of: collector
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 120
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: stats-refresher
+            app.kubernetes.io/part-of: collector
+            collector.shop/db-client: "true"
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 70
+            runAsGroup: 70
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: refresh
+              image: postgres:16-alpine
+              imagePullPolicy: IfNotPresent
+              command: ["psql", "-v", "ON_ERROR_STOP=1", "-c", "REFRESH MATERIALIZED VIEW CONCURRENTLY category_price_stats"]
+              env:
+                - { name: PGHOST, value: postgres }
+                - { name: PGUSER, value: collector }
+                - { name: PGDATABASE, value: collector }
+                - name: PGPASSWORD
+                  valueFrom: { secretKeyRef: { name: collector-secrets, key: POSTGRES_PASSWORD } }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+              resources:
+                requests: { cpu: 20m, memory: 32Mi }
+                limits: { cpu: 200m, memory: 128Mi }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pg-backups
+  labels:
+    app.kubernetes.io/name: pg-backup
+    app.kubernetes.io/part-of: collector
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pg-backup
+  labels:
+    app.kubernetes.io/name: pg-backup
+    app.kubernetes.io/part-of: collector
+spec:
+  schedule: "17 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: pg-backup
+            app.kubernetes.io/part-of: collector
+            collector.shop/db-client: "true"
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 70
+            runAsGroup: 70
+            fsGroup: 70
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: backup
+              image: postgres:16-alpine
+              imagePullPolicy: IfNotPresent
+              command:
+                - sh
+                - -c
+                - |
+                  set -eu
+                  file="/backups/collector-$(date -u +%Y%m%dT%H%M%SZ).dump"
+                  pg_dump -Fc -f "$file"
+                  echo "Sauvegarde écrite : $file"
+                  find /backups -name 'collector-*.dump' -mtime +7 -delete
+              env:
+                - { name: PGHOST, value: postgres }
+                - { name: PGUSER, value: collector }
+                - { name: PGDATABASE, value: collector }
+                - name: PGPASSWORD
+                  valueFrom: { secretKeyRef: { name: collector-secrets, key: POSTGRES_PASSWORD } }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }
+                limits: { cpu: 500m, memory: 256Mi }
+              volumeMounts:
+                - { name: backups, mountPath: /backups }
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: pg-backups

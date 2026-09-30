@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://collector.shop/schemas/price.changed.v1.json",
+  "title": "price.changed",
+  "type": "object",
+  "required": [
+    "event_id",
+    "type",
+    "version",
+    "occurred_at",
+    "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "type": {
+      "const": "price.changed"
+    },
+    "version": {
+      "const": 1
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "data": {
+      "type": "object",
+      "required": [
+        "article_id",
+        "aggregate_version",
+        "seller_id",
+        "category_id",
+        "old_price_cents",
+        "new_price_cents",
+        "currency",
+        "title"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "article_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "aggregate_version": {
+          "type": "integer"
+        },
+        "seller_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "category_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "old_price_cents": {
+          "type": "integer"
+        },
+        "new_price_cents": {
+          "type": "integer"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

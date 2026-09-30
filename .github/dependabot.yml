@@ -1,0 +1,20 @@
+# Montées de version hebdomadaires : dépendances Maven, images Docker et actions GitHub.
+# Les versions sont figées dans le dépôt (Enforcer, tags d'images) : Dependabot propose, le pipeline décide.
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: "/"
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      spring:
+        patterns: ["org.springframework*", "org.springframework.boot*"]
+  - package-ecosystem: docker
+    directory: "/"
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directory: "/infra/storage"
+    schedule: { interval: weekly }
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: weekly }

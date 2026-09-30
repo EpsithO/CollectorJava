@@ -1,0 +1,100 @@
+spring:
+  application:
+    name: catalogue-service
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:collector}
+    username: ${DB_USER:catalogue_app}
+    password: ${DB_PASSWORD}            # pas de valeur par défaut : démarrage refusé si absent
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 3s
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: false                      # migrations appliquées par le job Flyway (propriétaire)
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER}
+    password: ${RABBITMQ_PASSWORD}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true                   # message sans file = renvoyé, jamais perdu en silence
+    listener:
+      simple:
+        acknowledge-mode: auto
+        prefetch: 10
+        default-requeue-rejected: true
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${OIDC_ISSUER}    # valeur attendue du claim iss (URL publique)
+          jwk-set-uri: ${OIDC_JWKS_URL} # adresse interne : pas de découverte au démarrage
+          audiences: catalogue-api
+          jws-algorithms: RS256
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    deserialization:
+      fail-on-unknown-properties: true
+  mvc:
+    problemdetails:
+      enabled: true
+
+server:
+  port: 8080
+  shutdown: graceful
+  error:
+    include-stacktrace: never
+    include-message: never
+
+management:
+  server:
+    port: 8081
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+
+logging:
+  structured:
+    format:
+      console: ecs
+
+collector:
+  outbox:
+    relay-interval-ms: 500
+    batch-size: 50
+    lease: 30s                 # > confirm-timeout, sinon un lot en cours d'envoi serait repris
+    confirm-timeout: 5s
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
+  storage:
+    endpoint: ${S3_ENDPOINT}                 # interne : HEAD, suppression
+    public-endpoint: ${S3_PUBLIC_ENDPOINT}   # public : pré-signature (le navigateur l'ouvre)
+    region: ${S3_REGION:garage}              # Garage : s3_region de garage.toml ; Scaleway : fr-par
+    bucket: ${S3_BUCKET:collector-photos}
+    access-key: ${S3_ACCESS_KEY}
+    secret-key: ${S3_SECRET_KEY}
+    upload-ttl: 5m
+    download-ttl: 10m
+
+springdoc:                               # activés par le profil dev (application-dev.yml)
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false

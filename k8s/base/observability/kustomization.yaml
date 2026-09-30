@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - observability.yaml
+configMapGenerator:
+  # Configuration Prometheus propre à Kubernetes (découverte par annotations) ; le nom reçoit un suffixe
+  # de hachage, et kustomize réécrit la référence du Deployment : un changement redémarre Prometheus.
+  - name: prometheus-config
+    files:
+      - prometheus.yml

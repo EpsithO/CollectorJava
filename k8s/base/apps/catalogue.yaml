@@ -1,0 +1,164 @@
+# catalogue-service : articles, photos, prix, revue, suivi (US-014, US-033, US-029, US-021).
+# Durci : non-root, système de fichiers en lecture seule, capacités retirées, seccomp, sans jeton d'API Kubernetes.
+# Le relais de l'outbox tourne dans chaque réplica en parallèle (SKIP LOCKED + bail) : 2 réplicas sans risque.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalogue
+  labels:
+    app.kubernetes.io/name: catalogue
+    app.kubernetes.io/part-of: collector
+spec:
+  replicas: 2
+  strategy:
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }    # déploiement progressif sans interruption
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: catalogue
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: catalogue
+        app.kubernetes.io/part-of: collector
+        collector.shop/db-client: "true"
+        collector.shop/amqp-client: "true"
+        collector.shop/oidc-client: "true"
+        collector.shop/s3-client: "true"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8081"
+        prometheus.io/path: /actuator/prometheus
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      # Le catalogue démarre avant la fin du Job Flyway sur un premier déploiement : on attend que le
+      # schéma soit là (le rôle catalogue_app ne lit la table category qu'après V4__grants.sql).
+      initContainers:
+        - name: wait-for-schema
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              until psql -tAc 'SELECT 1 FROM category LIMIT 1' >/dev/null 2>&1; do
+                echo "schéma absent, attente du job Flyway"; sleep 3
+              done
+          env:
+            - { name: PGHOST, value: postgres }
+            - { name: PGUSER, value: catalogue_app }
+            - { name: PGDATABASE, value: collector }
+            - name: PGPASSWORD
+              valueFrom: { secretKeyRef: { name: collector-secrets, key: CATALOGUE_DB_PASSWORD } }
+          securityContext:
+            runAsUser: 70
+            runAsGroup: 70
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 100m, memory: 64Mi }
+      containers:
+        - name: catalogue
+          image: collector/catalogue-service:dev     # overlays ci et cloud : dépôt@sha256:… vérifié et signé
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 8080 }
+            - { name: management, containerPort: 8081 }
+          env:
+            # recette et démo : documentation d'API et POST /pings ; l'overlay cloud passe en « prod ».
+            - { name: SPRING_PROFILES_ACTIVE, value: "dev,recette" }
+            - { name: DB_HOST, value: postgres }
+            - { name: DB_USER, value: catalogue_app }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: collector-secrets, key: CATALOGUE_DB_PASSWORD } }
+            - { name: RABBITMQ_HOST, value: rabbitmq }
+            - name: RABBITMQ_USER
+              valueFrom: { secretKeyRef: { name: rabbitmq-default-user, key: username } }     # créé par l'opérateur
+            - name: RABBITMQ_PASSWORD
+              valueFrom: { secretKeyRef: { name: rabbitmq-default-user, key: password } }
+            - { name: OIDC_ISSUER, value: "https://auth.collector.local/realms/collector" }
+            - { name: OIDC_JWKS_URL, value: "http://keycloak:8080/realms/collector/protocol/openid-connect/certs" }
+            - { name: S3_ENDPOINT, value: "http://storage:3900" }
+            - { name: S3_PUBLIC_ENDPOINT, value: "https://s3.collector.local" }
+            - name: S3_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: collector-secrets, key: CATALOGUE_S3_ACCESS_KEY } }
+            - name: S3_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: collector-secrets, key: CATALOGUE_S3_SECRET_KEY } }
+            - { name: CORS_ALLOWED_ORIGINS, value: "https://collector.local" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 250m, memory: 384Mi }
+            limits: { cpu: "1", memory: 768Mi }
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: management }
+            periodSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: management }
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: management }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }          # Tomcat a besoin d'un répertoire de travail inscriptible
+      volumes:
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalogue
+  labels:
+    app.kubernetes.io/name: catalogue
+    app.kubernetes.io/part-of: collector
+spec:
+  selector:
+    app.kubernetes.io/name: catalogue
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+    - { name: management, port: 8081, targetPort: management }   # sondes et métriques ; jamais routé par l'Ingress
+---
+# Montée en charge : CPU 70 %, descente stabilisée 120 s. min/max selon l'overlay.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: catalogue
+  labels:
+    app.kubernetes.io/name: catalogue
+    app.kubernetes.io/part-of: collector
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: catalogue
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 120
+---
+# Une suppression de pod (ou un drainage de nœud) n'interrompt jamais le service : toujours un réplica disponible.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: catalogue
+  labels:
+    app.kubernetes.io/name: catalogue
+    app.kubernetes.io/part-of: collector
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: catalogue

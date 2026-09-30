@@ -1,0 +1,90 @@
+name: Release
+
+# Étape 8 du schéma : PRODUCTION. On ne reconstruit RIEN : on promeut le digest que la CI a construit, scanné,
+# signé et déjà déployé en recette pour ce commit. La chaîne de confiance est vérifiée avant toute promotion.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions: { contents: read }
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Environnement GitHub « production » : approbation manuelle requise avant le démarrage du job.
+    environment: production
+    permissions: { contents: write, packages: write, id-token: write }
+    env:
+      KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}        # vide : promotion seule, sans déploiement (non pénalisant, sujet)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sigstore/cosign-installer@v3
+      - uses: imjasonh/setup-crane@v0.4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+
+      - name: Version et commit du tag
+        id: version
+        run: |
+          echo "semver=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-list -n 1 "$GITHUB_REF")" >> "$GITHUB_OUTPUT"
+
+      - name: Vérification des signatures, résolution des digests
+        run: |
+          for service in catalogue-service controle-service notification-service; do
+            repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/collector-$service"
+            ref="$repo:${{ steps.version.outputs.sha }}"
+            # Le digest doit avoir été signé par le workflow CI de ce dépôt (donc construit, scanné et testé).
+            cosign verify "$ref" \
+              --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci.yml@" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
+            name="$(echo "${service%-service}" | tr a-z A-Z)_IMAGE"
+            echo "$name=$repo@$(crane digest "$ref")" >> "$GITHUB_ENV"
+          done
+
+      - name: Promotion du MÊME digest en SemVer, puis signature par ce workflow
+        run: |
+          for service in catalogue-service controle-service notification-service; do
+            repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/collector-$service"
+            name="$(echo "${service%-service}" | tr a-z A-Z)_IMAGE"
+            source="${!name}"
+            semver="${{ steps.version.outputs.semver }}"
+            docker buildx imagetools create -t "$repo:$semver" -t "$repo:${semver%.*}" "$source"
+            cosign sign --yes "$source"      # digest inchangé : la signature de release s'ajoute à celle de la CI
+          done
+
+      - name: Notes de version
+        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+        run: |
+          {
+            echo "Images promues (digests signés, identiques à ceux de la recette) :"
+            echo
+            echo "- \`$CATALOGUE_IMAGE\`"
+            echo "- \`$CONTROLE_IMAGE\`"
+            echo "- \`$NOTIFICATION_IMAGE\`"
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" --generate-notes --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
+
+      # --- Déploiement sur un cluster réel, seulement si KUBE_CONFIG est configuré ---------------------------------
+      - name: Accès au cluster
+        if: env.KUBE_CONFIG != ''
+        run: |
+          mkdir -p "$HOME/.kube"
+          printf '%s' "$KUBE_CONFIG" > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+      - name: Déploiement (overlay cloud, par digest signé)
+        if: env.KUBE_CONFIG != ''
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          STORAGE_INIT_IMAGE: ${{ vars.STORAGE_INIT_IMAGE }}
+        run: ./k8s/scripts/deploy.sh cloud
+      - name: Retour arrière si le déploiement échoue
+        if: failure() && env.KUBE_CONFIG != ''
+        run: |
+          # Possible car les migrations sont rétrocompatibles (expand / contract) : N-1 tourne sur le schéma N.
+          for deployment in catalogue controle notification; do
+            kubectl -n collector rollout undo "deployment/$deployment" || true
+          done
+          kubectl -n collector get pods

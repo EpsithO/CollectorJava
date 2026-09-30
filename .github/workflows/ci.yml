@@ -1,0 +1,220 @@
+name: CI/CD
+
+# Étapes 1 à 7 du schéma (CLAUDE.md D5) : commit, build, tests, qualité et sécurité, publication, recette, acceptation.
+# Construire UNE fois, promouvoir : l'image est construite, scannée, signée et poussée à l'étape 5 ;
+# la recette VÉRIFIE la signature puis déploie ce digest ; la production (release.yml) promeut le même digest.
+on:
+  push: { branches: [main] }
+  pull_request:
+  workflow_dispatch:
+
+permissions: { contents: read }
+
+concurrency:
+  group: "ci-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------- 1 · Commit / PR
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }            # tout l'historique : un secret supprimé reste dans les anciens commits
+      - uses: gitleaks/gitleaks-action@v2
+        env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+
+  # ---------------------------------------------------------------- 2 · Build + 3 · Tests
+  build-tests:
+    runs-on: ubuntu-latest
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}     # vide pour une PR de fork : l'analyse Sonar est alors sautée
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }            # SonarCloud : analyse du code nouveau
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21", cache: maven }
+      # Compilation -Xlint:all -Werror, unitaires, ArchUnit, contrats d'événements, intégration Testcontainers
+      # (Docker est disponible sur le runner : les *IT tournent ici), JaCoCo (branches ≥ 70 %), SBOM CycloneDX.
+      - run: ./mvnw -B verify
+      - name: Quality gate SonarCloud
+        if: env.SONAR_TOKEN != ''
+        run: >
+          ./mvnw -B org.sonarsource.scanner.maven:sonar-maven-plugin:sonar
+          -Dsonar.host.url=https://sonarcloud.io
+          -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
+          -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+          -Dsonar.qualitygate.wait=true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rapports-build
+          path: |
+            **/target/site/jacoco/**
+            **/target/surefire-reports/**
+            **/target/failsafe-reports/**
+            **/target/bom.json
+
+  # ---------------------------------------------------------------- 4 · Qualité et sécurité (CodeQL : codeql.yml)
+  analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: SAST — Semgrep
+        run: >
+          docker run --rm -v "$PWD:/src" -w /src semgrep/semgrep
+          semgrep scan --config p/java --config p/owasp-top-ten --error --metrics=off
+      - name: SCA, configuration et secrets — Trivy (0 critique)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: "vuln,misconfig,secret"
+          severity: CRITICAL
+          exit-code: "1"
+      - name: Manifests — kubeconform (tous les overlays)
+        run: |
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
+          for overlay in minikube ci sandbox cloud; do
+            echo "== overlay $overlay"
+            kubectl kustomize "k8s/overlays/$overlay" | ./kubeconform -strict -ignore-missing-schemas -summary
+          done
+
+  # ---------------------------------------------------------------- 5 · Publication
+  images:
+    needs: [secrets, build-tests, analysis]
+    # Une PR venant d'un fork n'a pas le droit de publier : elle s'arrête à l'étape 4.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write, id-token: write }     # id-token : cosign sans clé
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [catalogue-service, controle-service, notification-service]
+    steps:
+      - uses: actions/checkout@v4
+      # QEMU ne sert qu'à l'étape finale arm64 (copie de fichiers) : le JAR est construit une fois, en natif
+      # (--platform=$BUILDPLATFORM dans le Dockerfile).
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - name: Nom du dépôt d'image
+        id: ref
+        run: echo "repo=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/collector-${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+      # Publiée SANS signature : une image non signée n'est jamais déployée (la recette et la production
+      # vérifient la signature). On ne signe qu'après avoir scanné les DEUX variantes réellement publiées.
+      - name: Construction et publication multi-architecture (amd64 + arm64)
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          build-args: SERVICE=${{ matrix.service }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.ref.outputs.repo }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
+      - name: Scan Trivy — variante amd64 publiée (0 critique)
+        uses: aquasecurity/trivy-action@0.28.0
+        env: { TRIVY_PLATFORM: linux/amd64, TRIVY_USERNAME: "${{ github.actor }}", TRIVY_PASSWORD: "${{ secrets.GITHUB_TOKEN }}" }
+        with:
+          image-ref: "${{ steps.ref.outputs.repo }}@${{ steps.push.outputs.digest }}"
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Scan Trivy — variante arm64 publiée (0 critique)
+        uses: aquasecurity/trivy-action@0.28.0
+        env: { TRIVY_PLATFORM: linux/arm64, TRIVY_USERNAME: "${{ github.actor }}", TRIVY_PASSWORD: "${{ secrets.GITHUB_TOKEN }}" }
+        with:
+          image-ref: "${{ steps.ref.outputs.repo }}@${{ steps.push.outputs.digest }}"
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - uses: sigstore/cosign-installer@v3
+      - name: Signature de l'index multi-architecture (seulement si les deux scans passent)
+        run: cosign sign --yes "${{ steps.ref.outputs.repo }}@${{ steps.push.outputs.digest }}"
+
+  # ---------------------------------------------------------------- 6 · Recette + 7 · Acceptation
+  # Même job : le cluster éphémère ne survit pas entre deux jobs.
+  recette:
+    needs: images
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: read }
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sigstore/cosign-installer@v3
+      - uses: imjasonh/setup-crane@v0.4
+      - name: Vérification des signatures, résolution des digests
+        run: |
+          for service in catalogue-service controle-service notification-service; do
+            ref="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/collector-$service:${GITHUB_SHA}"   # même étiquette que le job images
+            # Seule une image signée par CE workflow de CE dépôt est acceptée.
+            cosign verify "$ref" \
+              --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci.yml@" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
+            name="$(echo "${service%-service}" | tr a-z A-Z)_IMAGE"                       # CATALOGUE_IMAGE, CONTROLE_IMAGE, NOTIFICATION_IMAGE
+            echo "$name=${ref%:*}@$(crane digest "$ref")" >> "$GITHUB_ENV"                 # dépôt@sha256:… (lu par deploy.sh)
+          done
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: collector
+          config: k8s/kind/cluster.yaml          # ports 80 et 443 exposés vers Traefik
+      - name: Plateforme (Traefik, cert-manager, opérateur RabbitMQ, metrics-server)
+        run: ./k8s/scripts/install-platform.sh kind
+      - name: Déploiement de la configuration complète, par digest vérifié
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          # deploy.sh ci : secret de pull GHCR, secrets aléatoires, ConfigMaps, images par digest,
+          # Flyway, initialisation du stockage, attente des rollouts.
+          ./k8s/scripts/deploy.sh ci
+          echo "127.0.0.1 api.collector.local auth.collector.local s3.collector.local" | sudo tee -a /etc/hosts
+      - name: Identifiants et autorité de certification de la recette
+        run: |
+          set -a; . k8s/.generated-secrets.env; set +a
+          echo "::add-mask::$KC_TEST_USER_PASSWORD"
+          echo "KC_TEST_USER_PASSWORD=$KC_TEST_USER_PASSWORD" >> "$GITHUB_ENV"
+          # Autorité locale : exportée pour le magasin de confiance des tests (HTTPS réel en recette).
+          kubectl -n collector get secret collector-ca -o jsonpath='{.data.ca\.crt}' | base64 -d > "$RUNNER_TEMP/collector-ca.crt"
+          echo "COLLECTOR_CA_CERT=$RUNNER_TEMP/collector-ca.crt" >> "$GITHUB_ENV"
+          # Console de gestion RabbitMQ : les scénarios observent les événements par l'API de management.
+          user="$(kubectl -n collector get secret rabbitmq-default-user -o jsonpath='{.data.username}' | base64 -d)"
+          pass="$(kubectl -n collector get secret rabbitmq-default-user -o jsonpath='{.data.password}' | base64 -d)"
+          echo "::add-mask::$pass"
+          echo "RABBITMQ_USER=$user" >> "$GITHUB_ENV"
+          echo "RABBITMQ_PASSWORD=$pass" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21", cache: maven }
+      - name: Scénarios Gherkin (hors @wip) contre la recette
+        run: |
+          kubectl -n collector port-forward svc/rabbitmq 15672:15672 > "$RUNNER_TEMP/port-forward.log" 2>&1 &
+          pf=$!
+          trap 'kill $pf 2>/dev/null || true' EXIT
+          sleep 3
+          ./mvnw -B -pl acceptance-tests -Pacceptance verify -Dcollector.env=recette
+        env:
+          RABBITMQ_MANAGEMENT_URL: http://localhost:15672
+      - name: DAST — ZAP (informatif en V1)
+        continue-on-error: true
+        run: |
+          mkdir -p zap && chmod 777 zap
+          docker run --rm --network host --add-host api.collector.local:127.0.0.1 -v "$PWD/zap:/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable zap-api-scan.py \
+            -t https://api.collector.local/v3/api-docs -f openapi -I -r zap-report.html
+      - name: Diagnostic en cas d'échec
+        if: failure()
+        run: |
+          kubectl get pods -A
+          kubectl -n collector describe pods | tail -200
+          kubectl -n collector logs -l app.kubernetes.io/part-of=collector --all-containers --tail=200 --prefix
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rapports-acceptation
+          path: |
+            acceptance-tests/target/*.html
+            acceptance-tests/target/cucumber*
+            zap/*.html

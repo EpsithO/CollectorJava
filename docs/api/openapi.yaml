@@ -1,0 +1,673 @@
+openapi: 3.1.0
+info:
+  title: Collector.shop — API
+  version: 0.1.0
+  description: |
+    Contrat des API HTTP du POC (catalogue-service et notification-service), écrit **avant** le code
+    (règle A2-1). JSON en `snake_case`. Erreurs au format RFC 9457 (`application/problem+json`) avec
+    une propriété `code` stable ; le détail technique (SQL, pile) reste dans les journaux.
+
+    Trois user stories liées : **US-014** (mise en vente avec contrôle automatisé), **US-033**
+    (revue des articles par l'administrateur), **US-029** (suivre un article, être prévenu des
+    variations de prix). **US-021** (centres d'intérêt) est livrée en exemple guidé.
+
+    Rôles Keycloak (`realm_access.roles`) : `acheteur`, `vendeur`, `admin`. Jetons de 5 minutes,
+    RS256. Audience attendue : `catalogue-api` pour le catalogue, `notification-api` pour les notifications.
+servers:
+  - url: https://api.collector.local/api/v1
+    description: Recette et démonstration (Traefik, TLS) — catalogue et notifications derrière le même hôte
+  - url: http://localhost:8080/api/v1
+    description: catalogue-service en local (docker compose)
+  - url: http://localhost:8082/api/v1
+    description: notification-service en local (docker compose)
+tags:
+  - name: public
+    description: Consultation sans compte
+  - name: vendeur
+    description: US-014 — mise en vente
+  - name: admin
+    description: US-033 — revue des articles
+  - name: acheteur
+    description: US-029 et US-021
+  - name: demonstration
+    description: Profils dev et recette seulement
+
+paths:
+  /categories:
+    get:
+      tags: [public]
+      operationId: listCategories
+      summary: Catégories, triées par libellé
+      description: Public. Exemple de référence de l'architecture hexagonale.
+      responses:
+        "200":
+          description: Toutes les catégories
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Category" }
+
+  /articles:
+    get:
+      tags: [public]
+      operationId: listArticles
+      summary: Catalogue public (US-006)
+      description: Articles `PUBLIE` uniquement, les plus récemment publiés d'abord. Un `category` inconnu donne une page vide.
+      parameters:
+        - name: category
+          in: query
+          description: Slug de la catégorie (`sneakers`, `posters`…)
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+        - name: size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        "200":
+          description: Une page d'articles
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArticlePage" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+    post:
+      tags: [vendeur]
+      operationId: createDraft
+      summary: Créer un brouillon (US-014)
+      description: |
+        Crée un article au statut `BROUILLON`. Le membre est créé au premier passage à partir du jeton.
+        Aucune coordonnée (e-mail, téléphone, y compris maquillés) n'est acceptée dans le titre ou la description.
+        Champs inconnus refusés.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ArticleCreateRequest" }
+      responses:
+        "201":
+          description: Brouillon créé
+          headers:
+            Location:
+              schema: { type: string, example: /api/v1/articles/6f9c0f0e-1b7a-4c53-9c59-1f2a0b4f7e11 }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Article" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422":
+          description: "`contact_info_forbidden` (coordonnées détectées)"
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+
+  /articles/{id}:
+    get:
+      tags: [public]
+      operationId: getArticle
+      summary: Fiche article (US-007)
+      description: |
+        Public pour un article publié. Un article non publié n'est visible que de son vendeur ;
+        pour tout autre, la réponse est **404** (et non 403) : l'existence n'est pas révélée.
+        Jeton facultatif. Les photos portent des URL de lecture pré-signées (10 minutes).
+      security: [{}, { bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ArticleId"
+      responses:
+        "200":
+          description: L'article
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Article" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /articles/{id}/photos:
+    post:
+      tags: [vendeur]
+      operationId: requestPhotoUpload
+      summary: Demander une URL d'envoi de photo (US-014, CA-1)
+      description: |
+        Réserve un emplacement et délivre une URL **pré-signée** `PUT` (5 minutes, `Content-Type` signé).
+        Le navigateur envoie le binaire directement au stockage objet : il ne transite jamais par l'API.
+        Types `image/jpeg`, `image/png`, `image/webp`, 5 Mo au plus, 8 photos au plus par article.
+        Réservé au vendeur propriétaire, sur un brouillon.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ArticleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PhotoUploadRequest" }
+      responses:
+        "201":
+          description: URL d'envoi
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PhotoUpload" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`too_many_photos` (8 au plus) ou `invalid_status` (l'article n'est plus un brouillon)"
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+
+  /articles/{id}/submission:
+    post:
+      tags: [vendeur]
+      operationId: submitArticle
+      summary: Soumettre le brouillon au contrôle (US-014, CA-1 et CA-6)
+      description: |
+        Vérifie chaque photo dans le stockage (existence, type, taille), passe l'article `EN_CONTROLE`
+        et écrit `article.submitted` dans l'outbox, dans la même transaction. Le contrôle automatique
+        répond ensuite de façon asynchrone (`PUBLIE` ou `EN_REVUE`, CA-2 et CA-3).
+        Une photo présente mais refusée est effacée du stockage.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ArticleId"
+      responses:
+        "200":
+          description: Article au statut `EN_CONTROLE`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Article" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`invalid_status` (déjà soumis)"
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "422":
+          description: "`photo_required` (aucune photo valide, l'article reste `BROUILLON`) ou `invalid_photo` (photo d'un type ou d'une taille refusés)"
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+
+  /articles/{id}/price:
+    patch:
+      tags: [vendeur]
+      operationId: changePrice
+      summary: Modifier le prix (US-014, CA-4 et CA-5)
+      description: |
+        Modifiable tant que l'article est `PUBLIE` ou `EN_REVUE`. Publie `price.changed`
+        (consommé par l'anti-fraude et par la notification) avec `aggregate_version`.
+        Un prix identique ne publie rien.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ArticleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PriceChangeRequest" }
+      responses:
+        "200":
+          description: Article mis à jour
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Article" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`invalid_status` (ni publié ni en revue) ou modification concurrente"
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+
+  /articles/{id}/follow:
+    put:
+      tags: [acheteur]
+      operationId: followArticle
+      summary: Suivre un article (US-029, CA-1)
+      description: |
+        Idempotent. L'article doit être `PUBLIE` (sinon 404). Le catalogue ne garde aucun état de suivi :
+        il publie `follow.changed` et le notification-service tient sa propre copie.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ArticleId"
+      responses:
+        "204": { description: Abonnement enregistré }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [acheteur]
+      operationId: unfollowArticle
+      summary: Ne plus suivre un article (US-029, CA-2)
+      description: Idempotent. Fonctionne même si l'article n'est plus publié.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ArticleId"
+      responses:
+        "204": { description: Abonnement retiré }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /me/articles:
+    get:
+      tags: [vendeur]
+      operationId: listMyArticles
+      summary: Mes articles
+      description: Tous les articles du vendeur connecté, tous statuts, filtrables par statut. Le motif d'un rejet figure dans `review_reason`.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/ArticleStatus" }
+      responses:
+        "200":
+          description: Articles du membre, les plus récents d'abord
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Article" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /me/interests:
+    get:
+      tags: [acheteur]
+      operationId: getInterests
+      summary: Mes centres d'intérêt (US-021, CA-2)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Centres d'intérêt, triés par libellé
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Interest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    put:
+      tags: [acheteur]
+      operationId: replaceInterests
+      summary: Remplacer mes centres d'intérêt (US-021)
+      description: |
+        Remplacement complet (idempotent) : la liste envoyée devient la liste enregistrée. Doublons
+        ignorés, 10 catégories au plus, liste vide autorisée. Le même choix ne republie rien.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [category_ids]
+              additionalProperties: false
+              properties:
+                category_ids:
+                  type: array
+                  maxItems: 100          # garde-fou technique ; la règle métier (10) est dans le domaine
+                  items: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Centres d'intérêt enregistrés
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Interest" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422":
+          description: "`unknown_category` ou `too_many_interests`"
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+
+  /admin/reviews:
+    get:
+      tags: [admin]
+      operationId: listPendingReviews
+      summary: File de revue (US-033, CA-1)
+      description: Articles `EN_REVUE`, les plus anciens d'abord, avec les éléments du contrôle qui les y ont mis. Rôle `admin`.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Articles à traiter
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ReviewItem" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/reviews/{articleId}:
+    post:
+      tags: [admin]
+      operationId: reviewArticle
+      summary: Valider ou rejeter un article en revue (US-033, CA-2 à CA-4)
+      description: |
+        `VALIDER` : l'article devient `PUBLIE`. `REJETER` : l'article devient `REJETE`, le motif est
+        obligatoire et visible du vendeur. Dans les deux cas `article.reviewed` est publié (outbox).
+        Rôle `admin`.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: articleId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReviewRequest" }
+      responses:
+        "200":
+          description: Article après décision
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Article" }
+        "400":
+          description: "`invalid_request` (décision inconnue, ou motif absent pour un rejet)"
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`invalid_status` (l'article n'est pas `EN_REVUE`)"
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+
+  /me/notifications:
+    get:
+      tags: [acheteur]
+      operationId: listNotifications
+      summary: Mes notifications (US-029, CA-3)
+      description: |
+        Servi par **notification-service**. Un membre ne voit jamais les notifications des autres :
+        l'identité est toujours celle du jeton (`sub`). Audience `notification-api`.
+      security: [{ bearerAuth: [] }]
+      servers:
+        - url: https://api.collector.local/api/v1
+      parameters:
+        - name: unread
+          in: query
+          description: Seulement les non lues
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Notifications, les plus récentes d'abord
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Notification" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /me/notifications/{id}/read:
+    post:
+      tags: [acheteur]
+      operationId: markNotificationRead
+      summary: Marquer une notification lue (US-029, CA-5)
+      description: Idempotent. La notification d'un autre membre répond 404, pas 403.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Marquée lue }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /pings:
+    post:
+      tags: [demonstration]
+      operationId: createPing
+      summary: Démonstration outbox vers RabbitMQ
+      description: Public, profils `dev` et `recette` seulement (absent en production). Publie `ping.created`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payload]
+              additionalProperties: false
+              properties:
+                payload: { type: string, minLength: 1, maxLength: 200 }
+      responses:
+        "201":
+          description: Ping créé, événement écrit dans l'outbox
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, payload, created_at]
+                properties:
+                  id: { type: integer, format: int64 }
+                  payload: { type: string }
+                  created_at: { type: string, format: date-time }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Jeton OIDC Keycloak (Authorization Code + PKCE), RS256, 5 minutes.
+
+  parameters:
+    ArticleId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    InvalidRequest:
+      description: "`invalid_request` — corps ou paramètre invalide ; `fields` liste les champs en erreur, jamais les valeurs saisies"
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Unauthorized:
+      description: "`unauthorized` — jeton absent ou invalide"
+    Forbidden:
+      description: "`forbidden` — rôle manquant, ou article d'un autre vendeur"
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    NotFound:
+      description: "`not_found` — ressource inconnue, ou non visible pour l'appelant"
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+
+  schemas:
+    Problem:
+      type: object
+      description: RFC 9457 avec un `code` stable (le message humain peut changer, le code non).
+      required: [status, code]
+      properties:
+        type: { type: string, example: about:blank }
+        title: { type: string }
+        status: { type: integer, example: 422 }
+        detail: { type: string }
+        instance: { type: string }
+        code:
+          type: string
+          enum:
+            - invalid_request
+            - unauthorized
+            - forbidden
+            - not_found
+            - invalid_status
+            - too_many_photos
+            - contact_info_forbidden
+            - photo_required
+            - invalid_photo
+            - unknown_category
+            - too_many_interests
+            - internal_error
+        fields:
+          type: array
+          description: Présent pour `invalid_request` de validation de corps
+          items: { type: string }
+
+    Category:
+      type: object
+      required: [id, slug, label, parent_id]
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string, example: sneakers }
+        label: { type: string, example: Baskets en édition limitée }
+        parent_id: { type: [string, "null"], format: uuid }
+
+    ArticleStatus:
+      type: string
+      enum: [BROUILLON, EN_CONTROLE, PUBLIE, EN_REVUE, REJETE, VENDU, RETIRE]
+
+    ArticleCreateRequest:
+      type: object
+      required: [title, description, category_id, price_cents]
+      additionalProperties: false
+      properties:
+        title: { type: string, minLength: 3, maxLength: 120 }
+        description: { type: string, minLength: 10, maxLength: 5000 }
+        category_id: { type: string, format: uuid }
+        price_cents: { type: integer, format: int64, minimum: 1, maximum: 100000000 }
+        shipping_cents: { type: integer, format: int64, minimum: 0, maximum: 10000000, default: 0 }
+        attributes:
+          type: object
+          description: Attributs libres selon la catégorie (année, état, tirage…)
+          additionalProperties: true
+
+    PhotoUploadRequest:
+      type: object
+      required: [content_type, size_bytes]
+      additionalProperties: false
+      properties:
+        content_type: { type: string, enum: [image/jpeg, image/png, image/webp] }
+        size_bytes: { type: integer, format: int64, minimum: 1, maximum: 5242880 }
+
+    PhotoUpload:
+      type: object
+      required: [photo_id, upload_url, upload_headers, expires_at]
+      properties:
+        photo_id: { type: string, format: uuid }
+        upload_url: { type: string, format: uri, description: URL pré-signée, hôte PUBLIC du stockage }
+        upload_headers:
+          type: object
+          description: En-têtes à renvoyer tels quels avec le PUT (le Content-Type est signé)
+          additionalProperties: { type: string }
+        expires_at: { type: string, format: date-time }
+
+    PriceChangeRequest:
+      type: object
+      required: [price_cents]
+      additionalProperties: false
+      properties:
+        price_cents: { type: integer, format: int64, minimum: 1, maximum: 100000000 }
+
+    Photo:
+      type: object
+      required: [id, url]
+      properties:
+        id: { type: string, format: uuid }
+        url: { type: string, format: uri, description: URL de lecture pré-signée (10 minutes) }
+
+    Article:
+      type: object
+      description: Le score d'anomalie n'est jamais exposé ici (information anti-fraude interne, voir ReviewItem).
+      required: [id, seller_id, category_id, title, description, price_cents, shipping_cents, currency, attributes, status, created_at, photos]
+      properties:
+        id: { type: string, format: uuid }
+        seller_id: { type: string, format: uuid }
+        category_id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string }
+        price_cents: { type: integer, format: int64 }
+        shipping_cents: { type: integer, format: int64 }
+        currency: { type: string, example: EUR }
+        attributes: { type: object, additionalProperties: true }
+        status: { $ref: "#/components/schemas/ArticleStatus" }
+        review_reason: { type: [string, "null"], description: Motif du rejet par l'administrateur }
+        published_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        photos:
+          type: array
+          description: Photos validées uniquement
+          items: { $ref: "#/components/schemas/Photo" }
+
+    ArticlePage:
+      type: object
+      required: [items, page, size, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Article" }
+        page: { type: integer }
+        size: { type: integer }
+        total: { type: integer, format: int64 }
+
+    ReviewRequest:
+      type: object
+      required: [decision]
+      additionalProperties: false
+      properties:
+        decision: { type: string, enum: [VALIDER, REJETER] }
+        reason:
+          type: [string, "null"]
+          maxLength: 500
+          description: Obligatoire pour `REJETER`, sinon 400
+
+    ReviewItem:
+      type: object
+      required: [article, anomaly_score, check_reason]
+      properties:
+        article: { $ref: "#/components/schemas/Article" }
+        anomaly_score: { type: [number, "null"], description: "|prix − médiane| / écart-type de la catégorie" }
+        check_reason: { type: [string, "null"], example: price_outlier }
+
+    Interest:
+      type: object
+      required: [category_id, slug, label]
+      properties:
+        category_id: { type: string, format: uuid }
+        slug: { type: string, example: sneakers }
+        label: { type: string, example: Baskets en édition limitée }
+
+    Notification:
+      type: object
+      required: [id, type, article_id, article_title, old_price_cents, new_price_cents, currency, price_drop, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, enum: [PRICE_CHANGED] }
+        article_id: { type: string, format: uuid }
+        article_title: { type: string }
+        old_price_cents: { type: integer, format: int64 }
+        new_price_cents: { type: integer, format: int64 }
+        currency: { type: string, example: EUR }
+        price_drop: { type: boolean }
+        created_at: { type: string, format: date-time }
+        read_at: { type: [string, "null"], format: date-time }

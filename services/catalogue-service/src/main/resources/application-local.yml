@@ -1,0 +1,12 @@
+# Service lancé depuis l'IDE, dépendances dans compose : adresses non secrètes vers la machine.
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://localhost:8081/realms/collector
+          jwk-set-uri: http://localhost:8081/realms/collector/protocol/openid-connect/certs
+collector:
+  storage:
+    endpoint: http://localhost:3900
+    public-endpoint: http://localhost:3900

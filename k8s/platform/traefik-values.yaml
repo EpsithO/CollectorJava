@@ -1,0 +1,35 @@
+# Valeurs Helm de Traefik (chart traefik/traefik), communes à tous les environnements.
+# HTTP vers HTTPS par redirection globale au niveau de l'entrée « web » ; TLS actif sur « websecure ».
+# Le rate limiting et les en-têtes de sécurité (HSTS…) sont des Middlewares de l'application (k8s/base/edge).
+ingressClass:
+  enabled: true
+  isDefaultClass: true
+providers:
+  kubernetesCRD:
+    enabled: true
+  kubernetesIngress:
+    enabled: true
+ports:
+  web:
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    http:
+      tls:
+        enabled: true
+ingressRoute:
+  dashboard:
+    enabled: false       # pas de tableau de bord exposé
+logs:
+  general:
+    format: json
+  access:
+    enabled: true
+    format: json
+resources:
+  requests: { cpu: 100m, memory: 64Mi }
+  limits: { cpu: 500m, memory: 256Mi }

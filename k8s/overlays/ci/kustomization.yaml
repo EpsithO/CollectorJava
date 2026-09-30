@@ -1,0 +1,17 @@
+# Recette en CI sur kind (runner 4 vCPU / 16 Go) : configuration CIBLE COMPLÈTE, celle que la démo locale réduit.
+#   RabbitMQ 3 nœuds (files quorum, pause_minority), 2 réplicas de chaque service, HPA du catalogue 2 à 6.
+# Les images sont celles construites et SIGNÉES par le pipeline, déployées par digest (scripts/deploy.sh ci
+# lit CATALOGUE_IMAGE, CONTROLE_IMAGE, NOTIFICATION_IMAGE).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - target: { kind: HorizontalPodAutoscaler, name: catalogue }
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 2
+      - op: replace
+        path: /spec/maxReplicas
+        value: 6

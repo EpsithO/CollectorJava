@@ -1,0 +1,36 @@
+# Cluster managé (option pour la soutenance : un cluster européen loué pour la journée, ou la production).
+# Différences avec la recette : profil « prod » (ni documentation d'API, ni POST /pings), RabbitMQ 3 nœuds,
+# HPA 2 à 6. Les images sont déployées PAR DIGEST SIGNÉ (scripts/deploy.sh cloud exige CATALOGUE_IMAGE,
+# CONTROLE_IMAGE, NOTIFICATION_IMAGE et STORAGE_INIT_IMAGE) : il n'y a volontairement pas de section images ici.
+#
+# À adapter au cluster avant usage réel (actions de remédiation, docs/remediation.md) :
+#   - storageClassName des volumes (PostgreSQL, RabbitMQ, Garage) ;
+#   - Issuer ACME (Let's Encrypt) à la place de l'autorité locale, sur de vrais noms de domaine ;
+#   - Keycloak en mode production avec une base PostgreSQL dédiée ;
+#   - stockage objet managé (Scaleway, OVHcloud) à la place de Garage : seules les variables S3_* changent.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: catalogue
+      spec:
+        template:
+          spec:
+            containers:
+              - name: catalogue
+                env:
+                  - name: SPRING_PROFILES_ACTIVE
+                    value: prod
+  - target: { kind: HorizontalPodAutoscaler, name: catalogue }
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 2
+      - op: replace
+        path: /spec/maxReplicas
+        value: 6

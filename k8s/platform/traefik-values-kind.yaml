@@ -1,0 +1,8 @@
+# Surcharge pour kind : pas de LoadBalancer, des NodePorts fixes joints par extraPortMappings (k8s/kind/cluster.yaml).
+service:
+  type: NodePort
+ports:
+  web:
+    nodePort: 30080
+  websecure:
+    nodePort: 30443

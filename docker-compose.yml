@@ -1,0 +1,191 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: collector
+      POSTGRES_USER: collector
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?voir .env.example}
+      CATALOGUE_DB_PASSWORD: ${CATALOGUE_DB_PASSWORD:?voir .env.example}
+      CONTROLE_DB_PASSWORD: ${CONTROLE_DB_PASSWORD:?voir .env.example}
+      MONITORING_DB_PASSWORD: ${MONITORING_DB_PASSWORD:?voir .env.example}
+      NOTIFICATION_DB_PASSWORD: ${NOTIFICATION_DB_PASSWORD:?voir .env.example}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U collector -d collector"]
+      interval: 5s
+      retries: 10
+
+  flyway: # migrations, identifiants du propriétaire
+    image: flyway/flyway:11
+    command: -connectRetries=10 migrate
+    environment:
+      FLYWAY_URL: jdbc:postgresql://postgres:5432/collector
+      FLYWAY_USER: collector
+      FLYWAY_PASSWORD: ${POSTGRES_PASSWORD:?voir .env.example}
+      # Un seul historique : V1 à V5 (catalogue), V100 (notification), puis le jeu de données répétable.
+      FLYWAY_LOCATIONS: filesystem:/flyway/migration,filesystem:/flyway/migration-notification,filesystem:/flyway/seed
+    volumes:
+      - ./services/catalogue-service/src/main/resources/db/migration:/flyway/migration:ro
+      - ./services/notification-service/src/main/resources/db/migration:/flyway/migration-notification:ro
+      - ./services/catalogue-service/src/main/resources/db/seed:/flyway/seed:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  stats-refresher: # seul le propriétaire peut rafraîchir la vue
+    image: postgres:16-alpine
+    entrypoint: ["sh", "-c", "while true; do psql -v ON_ERROR_STOP=1 -c 'REFRESH MATERIALIZED VIEW CONCURRENTLY category_price_stats'; sleep 300; done"]
+    environment:
+      PGHOST: postgres
+      PGUSER: collector
+      PGDATABASE: collector
+      PGPASSWORD: ${POSTGRES_PASSWORD:?voir .env.example}
+    depends_on:
+      flyway: { condition: service_completed_successfully }
+
+  rabbitmq:
+    image: rabbitmq:4.1-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-collector}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?voir .env.example}
+    ports: ["15672:15672"] # console seulement ; AMQP reste interne
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
+      - ./infra/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      retries: 5
+
+  storage: # Garage : S3 compatible, sans shell dans l'image
+    image: dxflrs/garage:v2.3.0
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:?voir .env.example}
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN:?voir .env.example}
+    ports: ["3900:3900"] # API S3 : le navigateur y envoie les photos (URL pré-signées)
+    volumes:
+      - ./infra/storage/garage.toml:/etc/garage.toml:ro
+      - storagemeta:/var/lib/garage/meta
+      - storagedata:/var/lib/garage/data
+
+  storage-init: # disposition du nœud, clé du catalogue, bucket privé, CORS
+    build: ./infra/storage
+    environment:
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN:?voir .env.example}
+      CATALOGUE_S3_ACCESS_KEY: ${CATALOGUE_S3_ACCESS_KEY:?voir .env.example}
+      CATALOGUE_S3_SECRET_KEY: ${CATALOGUE_S3_SECRET_KEY:?voir .env.example}
+      CORS_ORIGIN: http://localhost:5173
+    depends_on:
+      - storage
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?voir .env.example}
+      # Émetteur fixe : navigateur/tests passent par localhost:8081, les services
+      # par keycloak:8080. Sans ça, le "iss" du jeton ne correspond pas.
+      KC_HOSTNAME: http://localhost:8081
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HEALTH_ENABLED: "true"
+      JAVA_OPTS_KC_HEAP: "-Xms256m -Xmx512m"
+      KC_TEST_USER_PASSWORD: ${KC_TEST_USER_PASSWORD:?voir .env.example} # substitué dans le realm
+    ports: ["8081:8080"]
+    volumes:
+      - ./infra/keycloak/collector-realm.json:/opt/keycloak/data/import/collector-realm.json:ro
+    healthcheck: # pas de curl dans l'image : HTTP brut via bash
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      retries: 12
+      start_period: 30s
+
+  catalogue:
+    build: { context: ., args: { SERVICE: catalogue-service } }
+    image: collector/catalogue-service:dev
+    ports: ["8080:8080"]
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      DB_HOST: postgres
+      DB_USER: catalogue_app
+      DB_PASSWORD: ${CATALOGUE_DB_PASSWORD:?voir .env.example}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER:-collector}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?voir .env.example}
+      OIDC_ISSUER: http://localhost:8081/realms/collector
+      OIDC_JWKS_URL: http://keycloak:8080/realms/collector/protocol/openid-connect/certs
+      S3_ENDPOINT: http://storage:3900
+      S3_PUBLIC_ENDPOINT: http://localhost:3900
+      S3_ACCESS_KEY: ${CATALOGUE_S3_ACCESS_KEY:?voir .env.example}
+      S3_SECRET_KEY: ${CATALOGUE_S3_SECRET_KEY:?voir .env.example}
+    depends_on:
+      flyway: { condition: service_completed_successfully }
+      storage-init: { condition: service_completed_successfully }
+      rabbitmq: { condition: service_healthy }
+      keycloak: { condition: service_healthy }
+
+  controle:
+    build: { context: ., args: { SERVICE: controle-service } }
+    image: collector/controle-service:dev
+    environment:
+      DB_HOST: postgres
+      DB_USER: controle_app
+      DB_PASSWORD: ${CONTROLE_DB_PASSWORD:?voir .env.example}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER:-collector}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?voir .env.example}
+    depends_on:
+      flyway: { condition: service_completed_successfully }
+      rabbitmq: { condition: service_healthy }
+
+  notification:
+    build: { context: ., args: { SERVICE: notification-service } }
+    image: collector/notification-service:dev
+    ports: ["8082:8080"]
+    environment:
+      DB_HOST: postgres
+      DB_USER: notification_app
+      DB_PASSWORD: ${NOTIFICATION_DB_PASSWORD:?voir .env.example}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER:-collector}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?voir .env.example}
+      OIDC_ISSUER: http://localhost:8081/realms/collector
+      OIDC_JWKS_URL: http://keycloak:8080/realms/collector/protocol/openid-connect/certs
+    depends_on:
+      flyway: { condition: service_completed_successfully }
+      rabbitmq: { condition: service_healthy }
+      keycloak: { condition: service_healthy }
+
+  prometheus:
+    profiles: [observability]
+    image: prom/prometheus:v3.5.0
+    ports: ["9090:9090"]
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+
+  postgres-exporter:
+    profiles: [observability]
+    image: prometheuscommunity/postgres-exporter:v0.17.1
+    environment:
+      DATA_SOURCE_URI: postgres:5432/collector?sslmode=disable
+      DATA_SOURCE_USER: monitoring
+      DATA_SOURCE_PASS: ${MONITORING_DB_PASSWORD:?voir .env.example}
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  grafana:
+    profiles: [observability]
+    image: grafana/grafana:12.1.0
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?voir .env.example}
+    ports: ["3000:3000"]
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+
+volumes:
+  pgdata:
+  rabbitmqdata:
+  storagemeta:
+  storagedata:

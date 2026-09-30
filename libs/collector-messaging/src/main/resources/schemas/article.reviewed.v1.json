@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://collector.shop/schemas/article.reviewed.v1.json",
+  "title": "article.reviewed",
+  "type": "object",
+  "required": [
+    "event_id",
+    "type",
+    "version",
+    "occurred_at",
+    "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "type": {
+      "const": "article.reviewed"
+    },
+    "version": {
+      "const": 1
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "data": {
+      "type": "object",
+      "required": [
+        "article_id",
+        "seller_id",
+        "decision",
+        "reason",
+        "reviewed_by"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "article_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "seller_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "decision": {
+          "enum": [
+            "PUBLIE",
+            "REJETE"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reviewed_by": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,42 @@
+# Prometheus dans Kubernetes : découverte des pods annotés prometheus.io/scrape (services, exporter) et des
+# nœuds RabbitMQ par le Service headless de l'opérateur. Les règles d'alerte (infra/prometheus/rules.yml)
+# sont montées depuis la ConfigMap prometheus-rules, créée par deploy.sh.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/rules/rules.yml
+
+scrape_configs:
+  # catalogue, controle, notification (/actuator/prometheus, port 8081) et postgres-exporter (9187)
+  - job_name: collector-pods
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [collector]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: "true"
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      # Le nom du job suit le nom de l'application : les règles utilisent job=~"catalogue|controle|notification".
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        target_label: job
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+
+  # Plugin rabbitmq_prometheus : profondeur des files, débit, confirms, un point de mesure par nœud.
+  - job_name: rabbitmq
+    dns_sd_configs:
+      - names: [rabbitmq-nodes]
+        type: A
+        port: 15692

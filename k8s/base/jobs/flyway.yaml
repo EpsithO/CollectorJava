@@ -1,0 +1,58 @@
+# Migrations Flyway dans un JOB SÉPARÉ, avec les identifiants du propriétaire (ADR 0010) : les services
+# tournent avec flyway.enabled=false et ne connaissent jamais ce mot de passe.
+# Un seul historique pour les trois services : V1 à V5 (catalogue), V100 (notification), puis le jeu de
+# données répétable (dev et recette). Les ConfigMaps sont créées par deploy.sh depuis les fichiers des modules.
+# Un Job est immuable : deploy.sh le supprime avant de réappliquer.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: flyway
+  labels:
+    app.kubernetes.io/name: flyway
+    app.kubernetes.io/part-of: collector
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: flyway
+        app.kubernetes.io/part-of: collector
+        collector.shop/db-client: "true"
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: flyway
+          image: flyway/flyway:11
+          imagePullPolicy: IfNotPresent
+          args: ["migrate"]
+          env:
+            - { name: FLYWAY_URL, value: "jdbc:postgresql://postgres:5432/collector" }
+            - { name: FLYWAY_USER, value: collector }
+            - name: FLYWAY_PASSWORD
+              valueFrom: { secretKeyRef: { name: collector-secrets, key: POSTGRES_PASSWORD } }
+            - { name: FLYWAY_CONNECT_RETRIES, value: "60" }          # PostgreSQL peut démarrer après le Job
+            - { name: FLYWAY_LOCATIONS, value: "filesystem:/flyway/migration,filesystem:/flyway/migration-notification,filesystem:/flyway/seed" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          volumeMounts:
+            - { name: migration-catalogue, mountPath: /flyway/migration, readOnly: true }
+            - { name: migration-notification, mountPath: /flyway/migration-notification, readOnly: true }
+            - { name: seed, mountPath: /flyway/seed, readOnly: true }
+      volumes:
+        - name: migration-catalogue
+          configMap: { name: flyway-migrations-catalogue }
+        - name: migration-notification
+          configMap: { name: flyway-migrations-notification }
+        - name: seed
+          configMap: { name: flyway-seed }

@@ -1,0 +1,29 @@
+name: CodeQL
+
+on:
+  pull_request:
+  push: { branches: [main] }
+  schedule:
+    - cron: "41 3 * * 1"         # hebdomadaire : de nouvelles requêtes de sécurité paraissent sans qu'on touche au code
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21", cache: maven }
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: java-kotlin
+          build-mode: manual
+          queries: security-extended
+      - name: "Compilation sans tests (CodeQL observe la construction)"
+        run: ./mvnw -B -q -DskipTests -Djacoco.skip=true package
+      - uses: github/codeql-action/analyze@v3
+        with: { category: "/language:java-kotlin" }

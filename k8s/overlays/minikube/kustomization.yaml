@@ -1,0 +1,49 @@
+# Démo locale sur Minikube (< 16 Go de RAM) : réduction ASSUMÉE de la configuration cible.
+#   RabbitMQ 1 nœud (la cible à 3 nœuds est prouvée par la recette kind en CI), catalogue 2 réplicas (HPA 2 à 3),
+#   controle et notification 1 réplica. minikube start --cpus=4 --memory=6g --cni=calico
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - target: { kind: RabbitmqCluster, name: rabbitmq }
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      - op: replace
+        path: /spec/resources/requests/memory
+        value: 384Mi
+      - op: replace
+        path: /spec/resources/limits/memory
+        value: 768Mi
+  - target: { kind: HorizontalPodAutoscaler, name: catalogue }
+    patch: |-
+      - op: replace
+        path: /spec/maxReplicas
+        value: 3
+  - target: { kind: Deployment, name: controle }
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target: { kind: Deployment, name: notification }
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  # Un seul réplica : « minAvailable: 1 » bloquerait tout drainage de nœud ; on tolère une indisponibilité.
+  - target: { kind: PodDisruptionBudget, name: controle }
+    patch: |-
+      - op: remove
+        path: /spec/minAvailable
+      - op: add
+        path: /spec/maxUnavailable
+        value: 1
+  - target: { kind: PodDisruptionBudget, name: notification }
+    patch: |-
+      - op: remove
+        path: /spec/minAvailable
+      - op: add
+        path: /spec/maxUnavailable
+        value: 1

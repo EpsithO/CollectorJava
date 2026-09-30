@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://collector.shop/schemas/article.submitted.v1.json",
+  "title": "article.submitted",
+  "type": "object",
+  "required": [
+    "event_id",
+    "type",
+    "version",
+    "occurred_at",
+    "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "type": {
+      "const": "article.submitted"
+    },
+    "version": {
+      "const": 1
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "data": {
+      "type": "object",
+      "required": [
+        "article_id",
+        "seller_id",
+        "category_id",
+        "price_cents",
+        "currency",
+        "photo_count"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "article_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "seller_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "category_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "price_cents": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "currency": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 3
+        },
+        "photo_count": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

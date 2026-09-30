@@ -1,0 +1,98 @@
+# PostgreSQL 16 : un StatefulSet à une instance (base unique du POC, un rôle par service).
+# Les rôles sont créés au premier démarrage par 00_roles.sh (ConfigMap postgres-init, créée par deploy.sh) ;
+# les droits sont dans les migrations Flyway. Les mots de passe viennent du Secret collector-secrets.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: collector
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/part-of: collector
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70            # « postgres » dans l'image alpine
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: postgres, containerPort: 5432 }
+          env:
+            - { name: POSTGRES_DB, value: collector }
+            - { name: POSTGRES_USER, value: collector }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: collector-secrets, key: POSTGRES_PASSWORD } }
+            - name: CATALOGUE_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: collector-secrets, key: CATALOGUE_DB_PASSWORD } }
+            - name: CONTROLE_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: collector-secrets, key: CONTROLE_DB_PASSWORD } }
+            - name: NOTIFICATION_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: collector-secrets, key: NOTIFICATION_DB_PASSWORD } }
+            - name: MONITORING_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: collector-secrets, key: MONITORING_DB_PASSWORD } }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "collector", "-d", "collector"]
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "collector", "-d", "collector"]
+            periodSeconds: 10
+            initialDelaySeconds: 30
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: run, mountPath: /var/run/postgresql }     # socket, le reste du système de fichiers est en lecture seule
+            - { name: tmp, mountPath: /tmp }
+            - { name: init, mountPath: /docker-entrypoint-initdb.d, readOnly: true }
+      volumes:
+        - { name: run, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
+        - name: init
+          configMap:
+            name: postgres-init
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: collector
+spec:
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - { name: postgres, port: 5432, targetPort: postgres }

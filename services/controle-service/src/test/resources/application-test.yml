@@ -1,0 +1,10 @@
+spring:
+  datasource:
+    password: test
+  flyway:
+    enabled: true
+    # Le schéma appartient au catalogue : les tests le rejouent depuis ses migrations.
+    locations: classpath:db/migration,classpath:db/seed
+  rabbitmq:
+    username: guest
+    password: guest

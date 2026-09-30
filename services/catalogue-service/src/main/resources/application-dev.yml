@@ -1,0 +1,6 @@
+# Documentation interactive et démonstration (POST /pings) : dev et recette seulement.
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true

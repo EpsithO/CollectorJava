@@ -1,0 +1,22 @@
+# Base complète du namespace « collector », assemblée depuis un sous-dossier par composant.
+# Chaque composant reste réutilisable seul par un overlay (l'overlay sandbox n'utilise que namespace et rabbitmq).
+#
+# Ce que kustomize NE fournit PAS, créé par scripts/deploy.sh avant l'application (rien de secret dans le dépôt) :
+#   Secret    collector-secrets                      depuis .env, ou valeurs aléatoires en CI
+#   ConfigMap keycloak-realm, postgres-init, garage-config, prometheus-rules, grafana-datasources,
+#             flyway-migrations-catalogue, flyway-migrations-notification, flyway-seed
+#   (le Secret rabbitmq-default-user est créé par l'opérateur RabbitMQ)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: collector
+resources:
+  - namespace
+  - postgres
+  - rabbitmq
+  - keycloak
+  - storage
+  - jobs
+  - apps
+  - edge
+  - network-policies
+  - observability

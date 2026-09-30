@@ -1,0 +1,53 @@
+groups:
+  - name: collector
+    rules:
+      - alert: Taux5xxEleve
+        expr: sum(rate(http_server_requests_seconds_count{status=~"5..",uri!~"/actuator.*"}[5m])) / sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[5m])) > 0.01
+        for: 5m
+        annotations:
+          summary: "Plus de 1 % de réponses 5xx sur 5 minutes (SLO disponibilité)"
+      - alert: LatenceP95Elevee
+        expr: histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{uri!~"/actuator.*"}[5m]))) > 0.3
+        for: 10m
+        annotations:
+          summary: "p95 des requêtes HTTP supérieur à 300 ms (métrique 3)"
+      - alert: DelaiControleEleve
+        expr: histogram_quantile(0.95, sum by (le) (rate(collector_article_check_duration_seconds_bucket[5m]))) > 2
+        for: 10m
+        annotations:
+          summary: "p95 du délai soumission vers verdict supérieur à 2 s (CA-2)"
+      - alert: OutboxEnAttente
+        expr: collector_outbox_pending > 100
+        for: 5m
+        annotations:
+          summary: "Plus de 100 événements en attente dans l'outbox : le relais ne suit plus (broker ? confirms ?)"
+      - alert: LettresMortesNonVide
+        expr: rabbitmq_detailed_queue_messages{queue="collector.dead-letter"} > 0
+        for: 1m
+        annotations:
+          summary: "Des messages sont en lettres mortes : lire, corriger, rejouer (docs/exploitation.md)"
+      - alert: PicEchecsAuthentification
+        expr: sum(increase(http_server_requests_seconds_count{status=~"401|403",uri!~"/actuator.*"}[5m])) > 50
+        for: 5m
+        annotations:
+          summary: "Pic de 401/403 : attaque, jeton mal configuré ou JWKS injoignable (401 en masse)"
+      - alert: RedemarragesDePods
+        expr: increase(kube_pod_container_status_restarts_total{namespace="collector"}[15m]) > 2
+        for: 0m
+        annotations:
+          summary: "Un pod redémarre en boucle (OOMKilled ? sonde ?). Métrique fournie par kube-state-metrics, absente en compose"
+      - alert: NoeudRabbitMqAbsent
+        expr: count(up{job="rabbitmq"} == 1) < 3
+        for: 2m
+        annotations:
+          summary: "Moins de 3 noeuds RabbitMQ joignables (configuration cible : cluster de 3 noeuds, uniquement en recette kind)"
+      - alert: FileSansConsommateurQuiGrossit
+        expr: rabbitmq_detailed_queue_messages{queue=~"fraude\\..*|catalogue\\.ping"} > 1000
+        for: 15m
+        annotations:
+          summary: "File sans consommateur dans le POC (outil anti-fraude externe absent) : plus de 1000 messages, à vider ou à brancher (docs/exploitation.md)"
+      - alert: ServiceInjoignable
+        expr: up{job=~"catalogue|controle|notification"} == 0
+        for: 2m
+        annotations:
+          summary: "Un service ne répond plus à Prometheus"

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Exclusions SpotBugs justifiées une par une (chaque entrée dit POURQUOI). -->
+<FindBugsFilter>
+    <!-- Les records et DTO exposent des collections copiées de façon défensive dans leur constructeur
+         compact (Map.copyOf, List.copyOf, Set.copyOf) ; SpotBugs ne le voit pas. -->
+    <Match>
+        <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>
+    </Match>
+    <!-- Les entités JPA ont un constructeur protégé vide exigé par Hibernate. -->
+    <Match>
+        <Bug pattern="NP_UNWRITTEN_FIELD,UWF_UNWRITTEN_FIELD,UWF_FIELD_NOT_INITIALIZED_IN_CONSTRUCTOR"/>
+        <Class name="~.*Entity"/>
+    </Match>
+    <!-- CSRF désactivé volontairement : API sans état, jeton Bearer dans l'en-tête Authorization,
+         aucun cookie d'authentification. Sans cookie, un site tiers ne peut pas faire émettre la
+         requête par le navigateur de la victime : il n'y a pas de CSRF possible (ADR 0007). -->
+    <Match>
+        <Bug pattern="SPRING_CSRF_PROTECTION_DISABLED"/>
+        <Class name="~com\.collector\..*\.SecurityConfig"/>
+    </Match>
+    <!-- Les requêtes SQL sont des blocs de texte constants avec paramètres nommés (JdbcClient) :
+         aucune concaténation de données utilisateur. -->
+    <Match>
+        <Bug pattern="SQL_INJECTION_SPRING_JDBC,SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+</FindBugsFilter>

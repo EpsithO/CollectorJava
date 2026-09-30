@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://collector.shop/schemas/follow.changed.v1.json",
+  "title": "follow.changed",
+  "type": "object",
+  "required": [
+    "event_id",
+    "type",
+    "version",
+    "occurred_at",
+    "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "type": {
+      "const": "follow.changed"
+    },
+    "version": {
+      "const": 1
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "data": {
+      "type": "object",
+      "required": [
+        "member_id",
+        "article_id",
+        "following",
+        "changed_at"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "member_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "article_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "following": {
+          "type": "boolean"
+        },
+        "changed_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}

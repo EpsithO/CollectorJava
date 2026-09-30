@@ -1,0 +1,9 @@
+# Propriétaires du code : une revue du propriétaire est demandée automatiquement sur chaque PR.
+# Projet individuel aujourd'hui (GitHub interdit d'approuver sa propre PR) : la « revue à deux yeux » cible de
+# l'équipe est assurée par les contrôles obligatoires du pipeline. Remplacer l'identifiant ci-dessous par le
+# compte GitHub du Lead Developer (les adresses e-mail n'ont pas leur place dans un dépôt public).
+*                       @REMPLACER-PAR-LE-COMPTE-GITHUB
+/.github/               @REMPLACER-PAR-LE-COMPTE-GITHUB
+/k8s/                   @REMPLACER-PAR-LE-COMPTE-GITHUB
+/infra/                 @REMPLACER-PAR-LE-COMPTE-GITHUB
+/docs/adr/              @REMPLACER-PAR-LE-COMPTE-GITHUB
