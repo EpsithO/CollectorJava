@@ -18,12 +18,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: "21", cache: maven }
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@v4
         with:
           languages: java-kotlin
           build-mode: manual
           queries: security-extended
       - name: "Compilation sans tests (CodeQL observe la construction)"
         run: ./mvnw -B -q -DskipTests -Djacoco.skip=true package
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@v4
         with: { category: "/language:java-kotlin" }
