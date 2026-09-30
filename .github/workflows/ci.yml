@@ -96,7 +96,7 @@ jobs:
       # QEMU ne sert qu'à l'étape finale arm64 (copie de fichiers) : le JAR est construit une fois, en natif
       # (--platform=$BUILDPLATFORM dans le Dockerfile).
       - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v3
         with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
       - name: Nom du dépôt d'image
